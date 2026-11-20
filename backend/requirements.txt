@@ -1,0 +1,5 @@
+-e ../shared
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pyjwt>=2.8
+pwdlib[argon2]>=0.2
