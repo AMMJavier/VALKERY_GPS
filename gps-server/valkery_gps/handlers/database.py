@@ -1,8 +1,8 @@
 """Persistencia en MySQL: tramas, posiciones, estado actual y sesiones.
 
 Cada paquete AVL se guarda en UNA transacción (raw_packets + positions +
-device_states). Solo si el commit termina bien el servidor envía el ACK
-(ADR 0003). Las posiciones se insertan con ON DUPLICATE KEY sobre
+device_states + events). Solo si el commit termina bien el servidor envía
+el ACK (ADR 0003). Las posiciones se insertan con ON DUPLICATE KEY sobre
 (device_id, dedup_key): una retransmisión del equipo no crea duplicados y se
 vuelve a confirmar con el mismo ACK.
 
@@ -19,12 +19,14 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from valkery_core.enums import ParseStatus
+from valkery_core.enums import EventType, ParseStatus
 from valkery_core.models import Device, DeviceSessionRecord, DeviceState, Position, RawPacket
 
 from ..protocol.base import AvlPacket, CommandResponse, CrcError, ProtocolError, UnsupportedCodecError
 from ..protocol.teltonika.decoder import CODEC_12
 from ..session.device_session import DeviceSession
+from .events.base import EventSettings, PreviousState
+from .events.engine import EventEngine, connectivity_event
 from .normalize import position_row
 
 logger = logging.getLogger(__name__)
@@ -74,8 +76,11 @@ class DatabaseDeviceRegistry:
 
 
 class DatabaseSink:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self, session_factory: async_sessionmaker[AsyncSession], events: EventSettings | None = None
+    ) -> None:
         self._session_factory = session_factory
+        self._engine = EventEngine(events or EventSettings())
 
     async def mark_all_offline(self) -> None:
         """Al arrancar no hay sesiones vivas: limpia estados de un cierre abrupto anterior."""
@@ -102,7 +107,9 @@ class DatabaseSink:
                 )
             )
             session.record_id = result.inserted_primary_key[0]
-            await self._upsert_state(db, session.device_id, online=True, last_seen=session.connected_at)
+            state = await self._lock_state(db, session.device_id)
+            state.online = True
+            await self._communication(db, state, session.connected_at)
 
     async def session_closed(self, session: DeviceSession, reason: str, device_still_online: bool) -> None:
         async with self._session_factory.begin() as db:
@@ -117,10 +124,11 @@ class DatabaseSink:
                         records=session.records_received,
                     )
                 )
-            values: dict = {"last_seen": session.last_seen}
+            state = await self._lock_state(db, session.device_id)
+            if state.last_seen is None or session.last_seen > state.last_seen:
+                state.last_seen = session.last_seen
             if not device_still_online:
-                values["online"] = False
-            await self._upsert_state(db, session.device_id, **values)
+                state.online = False
 
     # ------------------------------------------------------------- paquetes
 
@@ -140,11 +148,33 @@ class DatabaseSink:
                 position_row(r, device_id=session.device_id, received_at=received_at, raw_packet_id=raw_packet_id)
                 for r in packet.records
             ]
+            # El bloqueo del estado serializa los paquetes del mismo dispositivo.
+            state = await self._lock_state(db, session.device_id)
+            previous = PreviousState(state.ignition, state.last_gps_time, state.fix_time)
+
+            keys = [r["dedup_key"] for r in rows]
+            key_filter = (Position.device_id == session.device_id, Position.dedup_key.in_(keys))
+            existing = set((await db.scalars(select(Position.dedup_key).where(*key_filter))).all())
+
             stmt = insert(Position).values(rows)
             # Duplicado → no se modifica nada (id = id). La retransmisión se confirma igual.
             await db.execute(stmt.on_duplicate_key_update(id=Position.__table__.c.id))
 
-            await self._update_state_from_rows(db, session, rows)
+            # dict(Result) no sirve: Result tiene .keys() y dict() lo trata como mapeo.
+            result = await db.execute(select(Position.dedup_key, Position.id).where(*key_filter))
+            ids = {key: position_id for key, position_id in result}
+            new_rows: list[dict] = []
+            seen: set[bytes] = set(existing)
+            for row in rows:
+                row["id"] = ids[row["dedup_key"]]
+                if row["dedup_key"] not in seen:
+                    seen.add(row["dedup_key"])
+                    new_rows.append(row)
+
+            state.online = True
+            await self._communication(db, state, session.last_seen)
+            self._apply_rows_to_state(state, rows)
+            await self._engine.process(db, session.device_id, new_rows, previous)
         return len(packet.records)
 
     async def handle_command_response(self, session: DeviceSession, response: CommandResponse, raw: bytes) -> None:
@@ -174,18 +204,37 @@ class DatabaseSink:
 
     # ------------------------------------------------------------- estado actual
 
-    async def _update_state_from_rows(self, db: AsyncSession, session: DeviceSession, rows: list[dict]) -> None:
-        state = await db.get(DeviceState, session.device_id, with_for_update=True)
-        if state is None:
-            state = DeviceState(device_id=session.device_id, online=True)
-            db.add(state)
-        state.online = True
-        state.last_seen = session.last_seen
+    @staticmethod
+    async def _lock_state(db: AsyncSession, device_id: int) -> DeviceState:
+        """Devuelve la fila de estado bloqueada (FOR UPDATE), creándola si no existe."""
+        stmt = insert(DeviceState).values(device_id=device_id)
+        # No se usa INSERT IGNORE: ocultaría errores reales (p. ej. FK inexistente).
+        await db.execute(stmt.on_duplicate_key_update(device_id=DeviceState.__table__.c.device_id))
+        state = await db.get(DeviceState, device_id, with_for_update=True, populate_existing=True)
+        assert state is not None
+        return state
 
+    @staticmethod
+    async def _communication(db: AsyncSession, state: DeviceState, at: datetime) -> None:
+        """Cualquier comunicación: actualiza last_seen y cierra un aviso de OFFLINE previo."""
+        if state.reported_offline:
+            state.reported_offline = False
+            await connectivity_event(
+                db,
+                state.device_id,
+                EventType.DEVICE_ONLINE,
+                at,
+                {"last_seen": state.last_seen.isoformat() if state.last_seen else None},
+            )
+        if state.last_seen is None or at > state.last_seen:
+            state.last_seen = at
+
+    @staticmethod
+    def _apply_rows_to_state(state: DeviceState, rows: list[dict]) -> None:
         newest = max(rows, key=lambda r: r["gps_time"])
         if state.last_gps_time is None or newest["gps_time"] >= state.last_gps_time:
             state.last_gps_time = newest["gps_time"]
-            state.last_position_id = await self._position_id(db, session.device_id, newest["dedup_key"])
+            state.last_position_id = newest["id"]
             for field in TELEMETRY_FIELDS:
                 if newest[field] is not None:
                     setattr(state, field, newest[field])
@@ -195,18 +244,8 @@ class DatabaseSink:
             fix = max(valid_rows, key=lambda r: r["gps_time"])
             if state.fix_time is None or fix["gps_time"] >= state.fix_time:
                 state.fix_time = fix["gps_time"]
-                state.fix_position_id = await self._position_id(db, session.device_id, fix["dedup_key"])
+                state.fix_position_id = fix["id"]
                 state.latitude = fix["latitude"]
                 state.longitude = fix["longitude"]
                 state.speed = fix["speed"]
                 state.course = fix["course"]
-        await db.flush()
-
-    @staticmethod
-    async def _position_id(db: AsyncSession, device_id: int, key: bytes) -> int | None:
-        return await db.scalar(select(Position.id).where(Position.device_id == device_id, Position.dedup_key == key))
-
-    @staticmethod
-    async def _upsert_state(db: AsyncSession, device_id: int, **values) -> None:
-        stmt = insert(DeviceState).values(device_id=device_id, **values)
-        await db.execute(stmt.on_duplicate_key_update(**{k: stmt.inserted[k] for k in values}))

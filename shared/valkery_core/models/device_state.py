@@ -4,6 +4,7 @@
 - Los campos de telemetría se toman del registro con gps_time más reciente,
   aunque el equipo envíe registros antiguos de su memoria después.
 - last_seen es la última vez que el equipo se comunicó (cualquier trama).
+- online = hay una conexión TCP abierta; reported_offline = se avisó DEVICE_OFFLINE.
 
 Referencia Traccar: Device.positionId + session/state/*
 """
@@ -27,6 +28,10 @@ class DeviceState(Base):
     )
     online: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     last_seen: Mapped[datetime | None] = mapped_column(UtcDateTime())
+    # True desde que se emitió DEVICE_OFFLINE hasta la siguiente comunicación (DEVICE_ONLINE).
+    reported_offline: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     # Último registro recibido (por gps_time)
     last_position_id: Mapped[int | None] = mapped_column(

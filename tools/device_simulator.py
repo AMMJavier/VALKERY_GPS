@@ -7,6 +7,12 @@ Ejemplos (desde la raíz del repo, con el servidor corriendo):
     python tools/device_simulator.py --imei 356307042441013
     python tools/device_simulator.py --codec 8e --records 3 --packets 5 --fragment 7
     python tools/device_simulator.py --pdf-example
+    python tools/device_simulator.py --scenario trip --records 4
+
+Escenario "trip" (para probar eventos, fase 3): moto estacionada con
+contacto apagado → enciende → se aleja ~600 m hacia el norte → se detiene y
+apaga → alarma de remolque (I/O 246). Con una geocerca circular de 150 m en
+el punto de partida produce: IGNITION_ON, GEOFENCE_EXIT, IGNITION_OFF, TOWING.
 
 Referencia Traccar: tools/test-generator.py
 """
@@ -58,6 +64,40 @@ def make_records(count: int, start: datetime, lat: float, lon: float) -> list[Av
     return records
 
 
+def make_trip(start: datetime, lat: float, lon: float) -> list[AvlRecord]:
+    """Recorrido determinista: 3 parado, encendido, 12 en marcha, parada, apagado, remolque."""
+    step_deg = 50 / 111_320  # ~50 m hacia el norte por registro
+    records: list[AvlRecord] = []
+
+    def add(ignition: int, speed: int, moved: int, event_io_id: int = 0, extra: dict | None = None) -> None:
+        io = {239: ignition, 240: 1 if speed else 0, 21: 4, 69: 1, 179: 0, 66: 12800 if ignition else 12400}
+        io.update(extra or {})
+        records.append(
+            AvlRecord(
+                timestamp=start + timedelta(seconds=10 * len(records)),
+                priority=1 if event_io_id else 0,
+                longitude=round(lon, 7),
+                latitude=round(lat + moved * step_deg, 7),
+                altitude=20,
+                angle=0,
+                satellites=10,
+                speed=speed,
+                event_io_id=event_io_id,
+                io=io,
+            )
+        )
+
+    for _ in range(3):
+        add(ignition=0, speed=0, moved=0)
+    add(ignition=1, speed=0, moved=0, event_io_id=239)
+    for i in range(1, 13):
+        add(ignition=1, speed=30, moved=i)
+    add(ignition=1, speed=0, moved=12)
+    add(ignition=0, speed=0, moved=12, event_io_id=239)
+    add(ignition=0, speed=0, moved=12, event_io_id=246, extra={246: 1})
+    return records
+
+
 async def send(writer: asyncio.StreamWriter, data: bytes, fragment: int) -> None:
     if fragment <= 0:
         writer.write(data)
@@ -82,9 +122,15 @@ async def run(args: argparse.Namespace) -> int:
         codec = CODEC_8_EXT if args.codec == "8e" else CODEC_8
         lat, lon = args.lat, args.lon
         start = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=10 * args.records * args.packets)
+        if args.scenario == "trip":
+            trip = make_trip(datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=5), lat, lon)
+            chunks = [trip[i : i + args.records] for i in range(0, len(trip), args.records)]
+            args.packets = len(chunks)
         for n in range(args.packets):
             if args.pdf_example:
                 frame, expected = PDF_EXAMPLE, 1
+            elif args.scenario == "trip":
+                frame, expected = build_avl_frame(chunks[n], codec), len(chunks[n])
             else:
                 records = make_records(args.records, start + timedelta(seconds=10 * args.records * n), lat, lon)
                 lat, lon = records[-1].latitude, records[-1].longitude
@@ -116,6 +162,7 @@ def main() -> None:
     p.add_argument("--fragment", type=int, default=0, help="enviar en trozos de N bytes (0 = entero)")
     p.add_argument("--ping", action="store_true", help="enviar 0xFF tras cada paquete")
     p.add_argument("--pdf-example", action="store_true", help="enviar la trama de ejemplo del PDF")
+    p.add_argument("--scenario", choices=["random", "trip"], default="random", help="trip: recorrido para eventos")
     p.add_argument("--lat", type=float, default=54.6990336, help="latitud inicial (por defecto, la del PDF)")
     p.add_argument("--lon", type=float, default=25.2618832, help="longitud inicial (por defecto, la del PDF)")
     raise SystemExit(asyncio.run(run(p.parse_args())))

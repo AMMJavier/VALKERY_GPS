@@ -18,6 +18,8 @@ from valkery_core.db import create_engine, create_session_factory
 
 from .config import GpsServerConfig
 from .handlers.database import DatabaseDeviceRegistry, DatabaseSink
+from .handlers.events.base import EventSettings
+from .schedule.inactivity import inactivity_loop
 from .schedule.retention import retention_loop
 from .server import GpsServer
 
@@ -28,15 +30,20 @@ async def run() -> None:
     settings = get_core_settings()
     engine = create_engine()
     session_factory = create_session_factory(engine)
-    sink = DatabaseSink(session_factory)
+    events = EventSettings.from_env()
+    sink = DatabaseSink(session_factory, events)
     server = GpsServer(GpsServerConfig.from_env(), DatabaseDeviceRegistry(session_factory), sink)
 
     await sink.mark_all_offline()
-    retention = asyncio.create_task(retention_loop(session_factory, settings.raw_packet_retention_days))
+    tasks = [
+        asyncio.create_task(retention_loop(session_factory, settings.raw_packet_retention_days)),
+        asyncio.create_task(inactivity_loop(session_factory, events.offline_after_s, events.inactivity_check_s)),
+    ]
     try:
         await server.serve_forever()
     finally:
-        retention.cancel()
+        for task in tasks:
+            task.cancel()
         await server.stop()
         await engine.dispose()
         logger.info("Servidor detenido")

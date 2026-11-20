@@ -2,13 +2,13 @@
 
 Plataforma propia de monitoreo GPS para un **Teltonika FMC920** (motocicleta con relé de inmovilización).
 
-Estado: **fase 2 completa** (servidor TCP + persistencia en MySQL). Sin validación en hardware real.
+Estado: **fase 3 completa** (servidor TCP, persistencia en MySQL y motor de eventos). Sin validación en hardware real.
 
 | Fase | Estado |
 |---|---|
 | 1 · TCP y codecs | ✅ IMEI, tramas fragmentadas, CRC, varios AVL, ACK, simulador |
 | 2 · Persistencia | ✅ MySQL + Alembic, posiciones sin duplicados, estado actual, sesiones, retención |
-| 3 · Eventos | pendiente |
+| 3 · Eventos | ✅ encendido, alarmas nativas, geocercas, conexión/desconexión, reglas |
 | 4 · API | pendiente |
 | 5 · Dashboard | pendiente |
 | 6 · Comandos | pendiente (el encoder Codec 12 ya existe; el envío no) |
@@ -38,14 +38,14 @@ VALKERY_GPS/
 │   ├── protocol/teltonika/   #   frame_decoder, decoder (8/8E/12), encoder (12), crc, io_elements
 │   ├── session/              #   connection_manager, device_session
 │   ├── handlers/             #   validity, normalize, database  (antes del ACK)
-│   │   └── events/           #   ignition, alarm, geofence, command_result (después de guardar)
+│   │   └── events/           #   engine, ignition, alarm, geofence (misma transacción, ADR 0004)
 │   ├── commands/             #   dispatcher: MySQL -> sesión TCP activa
-│   ├── schedule/             #   retención de tramas; inactividad y expiración (fases 3/6)
+│   ├── schedule/             #   retención de tramas, inactividad (DEVICE_OFFLINE)
 │   └── pipeline.py           #   orden de handlers; ACK solo tras persistir
 ├── backend/valkery_api/      # FastAPI: auth, recursos REST v1, WebSocket      (≈ traccar api/)
 ├── frontend/                 # React + Tailwind + Vite                         (≈ traccar-web)
 ├── database/                 # Alembic (migrations/) y setup/ (script SQL inicial) (≈ traccar schema/)
-├── tools/                    # Simulador FMC920, alta de dispositivos, hex       (≈ traccar tools/)
+├── tools/                    # Simulador, dispositivos, geocercas, eventos       (≈ traccar tools/)
 ├── deployment/               # Compose, nginx, systemd                         (≈ traccar docker/, setup/)
 └── docs/                     # ADRs y notas de protocolo
 ```
@@ -124,6 +124,25 @@ python tools/device_simulator.py --pdf-example
 El IMEI `356307042441013` es el del ejemplo del PDF. El IMEI real se registra con `manage_devices.py`
 y nunca se guarda en el repositorio.
 
+### 5. Eventos y geocercas (fase 3)
+
+```powershell
+python tools/manage_geofences.py add-circle --name "Casa" --lat 54.6990336 --lon 25.2618832 --radius 150
+python tools/device_simulator.py --scenario trip --records 4
+python tools/manage_events.py list
+python tools/manage_events.py rules
+python tools/manage_events.py set-rule --type GEOFENCE_ENTER --disable
+```
+
+El escenario `trip` produce `IGNITION_ON`, `GEOFENCE_EXIT`, `IGNITION_OFF` y `TOWING`.
+
+| Evento | Origen | Severidad por defecto | Cuándo |
+|---|---|---|---|
+| IGNITION_ON / IGNITION_OFF | plataforma | info | Cambio real de encendido (no en cada registro) |
+| TOWING / CRASH / JAMMING / POWER_CUT | equipo | critical | El registro fue causado por ese I/O (246/247/249/252) |
+| GEOFENCE_ENTER / GEOFENCE_EXIT | plataforma | info / warning | Cruce de geocerca con posición válida e histéresis |
+| DEVICE_OFFLINE / DEVICE_ONLINE | plataforma | warning / info | Sin comunicación por `VALKERY_EVENT_OFFLINE_AFTER_S` / vuelve a comunicar |
+
 ### Consultas útiles en Workbench
 
 ```sql
@@ -132,6 +151,7 @@ SELECT gps_time, received_at, valid, latitude, longitude, speed, ignition, dout1
   FROM positions ORDER BY gps_time DESC LIMIT 50;
 SELECT * FROM device_sessions ORDER BY connected_at DESC LIMIT 20;
 SELECT id, received_at, codec, record_count, parse_status, error FROM raw_packets ORDER BY id DESC LIMIT 20;
+SELECT occurred_at, event_type, severity, source, attributes FROM events ORDER BY occurred_at DESC LIMIT 50;
 ```
 
 ## Reglas de seguridad
