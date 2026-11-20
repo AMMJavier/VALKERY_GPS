@@ -7,8 +7,8 @@ import contextlib
 from datetime import UTC, datetime
 
 from valkery_gps.config import GpsServerConfig
-from valkery_gps.pipeline import AllowListAuthorizer
-from valkery_gps.protocol.base import AvlPacket, AvlRecord, CommandResponse
+from valkery_gps.pipeline import AllowListRegistry
+from valkery_gps.protocol.base import AvlPacket, AvlRecord, CommandResponse, ProtocolError
 from valkery_gps.protocol.teltonika.avl_builder import build_avl_frame, build_imei_frame
 from valkery_gps.protocol.teltonika.crc import crc16_ibm
 from valkery_gps.protocol.teltonika.decoder import CODEC_8_EXT
@@ -22,23 +22,35 @@ class RecordingSink:
     def __init__(self, fail: bool = False) -> None:
         self.packets: list[AvlPacket] = []
         self.responses: list[CommandResponse] = []
+        self.rejected: list[ProtocolError] = []
+        self.opened: list[DeviceSession] = []
+        self.closed: list[tuple[str, str, bool]] = []
         self.fail = fail
 
-    async def handle_packet(self, session: DeviceSession, packet: AvlPacket) -> int:
+    async def session_opened(self, session: DeviceSession) -> None:
+        self.opened.append(session)
+
+    async def handle_packet(self, session: DeviceSession, packet: AvlPacket, raw: bytes) -> int:
         if self.fail:
             raise RuntimeError("base de datos caída")
         self.packets.append(packet)
         return len(packet.records)
 
-    async def handle_command_response(self, session: DeviceSession, response: CommandResponse) -> None:
+    async def handle_command_response(self, session: DeviceSession, response: CommandResponse, raw: bytes) -> None:
         self.responses.append(response)
+
+    async def packet_rejected(self, session: DeviceSession, raw: bytes, error: ProtocolError) -> None:
+        self.rejected.append(error)
+
+    async def session_closed(self, session: DeviceSession, reason: str, device_still_online: bool) -> None:
+        self.closed.append((session.imei, reason, device_still_online))
 
 
 @contextlib.asynccontextmanager
 async def running_server(sink: RecordingSink, **config):
     settings = {"host": "127.0.0.1", "port": 0, "handshake_timeout_s": 2, "idle_timeout_s": 2, **config}
     cfg = GpsServerConfig(**settings)
-    server = GpsServer(cfg, AllowListAuthorizer(frozenset({TEST_IMEI})), sink)
+    server = GpsServer(cfg, AllowListRegistry({TEST_IMEI}), sink)
     await server.start()
     try:
         yield server
@@ -207,3 +219,62 @@ async def test_connection_limit():
         assert await read_eof(r2) == b""
         w1.close()
         await w1.wait_closed()
+
+
+async def test_close_reasons_and_rejected_packet(pdf_example):
+    sink = RecordingSink()
+    async with running_server(sink) as server:
+        reader, writer = await connect(server)
+        corrupted = bytearray(pdf_example)
+        corrupted[40] ^= 0x01
+        writer.write(build_imei_frame(TEST_IMEI) + bytes(corrupted))
+        await writer.drain()
+        await read_eof(reader)
+        await asyncio.sleep(0.05)
+    assert len(sink.rejected) == 1
+    imei, reason, still_online = sink.closed[0]
+    assert imei == TEST_IMEI and reason.startswith("protocol_error") and still_online is False
+
+
+async def test_replaced_session_reports_device_still_online():
+    sink = RecordingSink()
+    async with running_server(sink) as server:
+        r1, w1 = await connect(server)
+        w1.write(build_imei_frame(TEST_IMEI))
+        await w1.drain()
+        await r1.readexactly(1)
+        r2, w2 = await connect(server)
+        w2.write(build_imei_frame(TEST_IMEI))
+        await w2.drain()
+        await r2.readexactly(1)
+        await read_eof(r1)
+        await asyncio.sleep(0.05)
+        assert sink.closed == [(TEST_IMEI, "replaced", True)]
+        w2.close()
+        await w2.wait_closed()
+        await asyncio.sleep(0.05)
+    assert sink.closed[-1][2] is False
+
+
+async def test_stop_closes_open_sessions_with_reason():
+    sink = RecordingSink()
+    async with running_server(sink) as server:
+        reader, writer = await connect(server)
+        writer.write(build_imei_frame(TEST_IMEI))
+        await writer.drain()
+        await reader.readexactly(1)
+    assert sink.closed == [(TEST_IMEI, "server_shutdown", False)]
+
+
+async def test_session_open_failure_does_not_leak_connection():
+    class FailingOpenSink(RecordingSink):
+        async def session_opened(self, session: DeviceSession) -> None:
+            raise RuntimeError("MySQL caído")
+
+    async with running_server(FailingOpenSink()) as server:
+        reader, writer = await connect(server)
+        writer.write(build_imei_frame(TEST_IMEI))
+        await writer.drain()
+        await read_eof(reader)
+        await asyncio.sleep(0.05)
+        assert len(server.connections) == 0

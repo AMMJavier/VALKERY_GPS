@@ -1,4 +1,7 @@
-"""Configuración del servidor GPS desde variables de entorno (ver .env.example)."""
+"""Configuración del servidor GPS desde variables de entorno (ver .env.example).
+
+La base de datos se configura en valkery_core.config (VALKERY_DB_URL).
+"""
 
 from __future__ import annotations
 
@@ -19,12 +22,10 @@ class GpsServerConfig:
     handshake_timeout_s: int = 30
     max_connections: int = 50
     max_frame_bytes: int = 64 * 1024
-    allowed_imeis: frozenset[str] = frozenset()
 
     @classmethod
     def from_env(cls) -> GpsServerConfig:
         defaults = cls()  # con slots=True, cls.<campo> no devuelve el valor por defecto
-        imeis = os.environ.get("VALKERY_GPS_ALLOWED_IMEIS", "")
         return cls(
             host=os.environ.get("VALKERY_GPS_HOST", defaults.host),
             port=_int("VALKERY_GPS_PORT", defaults.port),
@@ -32,5 +33,4 @@ class GpsServerConfig:
             handshake_timeout_s=_int("VALKERY_GPS_HANDSHAKE_TIMEOUT_S", defaults.handshake_timeout_s),
             max_connections=_int("VALKERY_GPS_MAX_CONNECTIONS", defaults.max_connections),
             max_frame_bytes=_int("VALKERY_GPS_MAX_FRAME_BYTES", defaults.max_frame_bytes),
-            allowed_imeis=frozenset(i.strip() for i in imeis.split(",") if i.strip()),
         )

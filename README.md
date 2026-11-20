@@ -2,12 +2,12 @@
 
 Plataforma propia de monitoreo GPS para un **Teltonika FMC920** (motocicleta con relé de inmovilización).
 
-Estado: **fase 1 completa** (servidor TCP, Codec 8/8E/12 y ACK). Sin persistencia ni validación en hardware real.
+Estado: **fase 2 completa** (servidor TCP + persistencia en MySQL). Sin validación en hardware real.
 
 | Fase | Estado |
 |---|---|
 | 1 · TCP y codecs | ✅ IMEI, tramas fragmentadas, CRC, varios AVL, ACK, simulador |
-| 2 · Persistencia | pendiente |
+| 2 · Persistencia | ✅ MySQL + Alembic, posiciones sin duplicados, estado actual, sesiones, retención |
 | 3 · Eventos | pendiente |
 | 4 · API | pendiente |
 | 5 · Dashboard | pendiente |
@@ -37,15 +37,15 @@ VALKERY_GPS/
 ├── gps-server/valkery_gps/   # Proceso TCP: framing, codecs, sesiones, pipeline (≈ traccar núcleo)
 │   ├── protocol/teltonika/   #   frame_decoder, decoder (8/8E/12), encoder (12), crc, io_elements
 │   ├── session/              #   connection_manager, device_session
-│   ├── handlers/             #   validity, distance, motion, database  (antes de guardar)
+│   ├── handlers/             #   validity, normalize, database  (antes del ACK)
 │   │   └── events/           #   ignition, alarm, geofence, command_result (después de guardar)
 │   ├── commands/             #   dispatcher: MySQL -> sesión TCP activa
-│   ├── schedule/             #   inactividad, expiración de comandos
+│   ├── schedule/             #   retención de tramas; inactividad y expiración (fases 3/6)
 │   └── pipeline.py           #   orden de handlers; ACK solo tras persistir
 ├── backend/valkery_api/      # FastAPI: auth, recursos REST v1, WebSocket      (≈ traccar api/)
 ├── frontend/                 # React + Tailwind + Vite                         (≈ traccar-web)
-├── database/                 # Alembic (migrations/) y seeds sin datos reales  (≈ traccar schema/)
-├── tools/                    # Simulador FMC920 y utilidades hex               (≈ traccar tools/)
+├── database/                 # Alembic (migrations/) y setup/ (script SQL inicial) (≈ traccar schema/)
+├── tools/                    # Simulador FMC920, alta de dispositivos, hex       (≈ traccar tools/)
 ├── deployment/               # Compose, nginx, systemd                         (≈ traccar docker/, setup/)
 └── docs/                     # ADRs y notas de protocolo
 ```
@@ -71,21 +71,46 @@ Ver [docs/adr](docs/adr) para las decisiones.
 
 ## Puesta en marcha (desarrollo)
 
+### 1. Entorno Python
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install pytest pytest-asyncio
+pip install -e shared -r requirements-dev.txt
+```
+
+### 2. Base de datos (una sola vez)
+
+1. Abre [database/setup/01_crear_bd_y_usuario.sql](database/setup/01_crear_bd_y_usuario.sql) en MySQL Workbench
+   (conectado como root), cambia `CAMBIAR_ESTA_CLAVE` y ejecútalo. Crea `valkery_gps`, `valkery_gps_test`
+   y el usuario `valkery`.
+2. Copia `.env.example` a `.env` y pon esa contraseña en `VALKERY_DB_URL` y `VALKERY_TEST_DB_URL`.
+3. Crea las tablas:
+
+```powershell
+alembic -c database/alembic.ini upgrade head
+```
+
+### 3. Pruebas
+
+```powershell
 python -m pytest
 ```
 
-La fase 1 no usa dependencias externas. Las de `backend/` y `shared/` se instalan a partir de la fase 2.
+Las pruebas de MySQL usan `valkery_gps_test` (se vacía en cada ejecución). Sin `VALKERY_TEST_DB_URL` se omiten.
 
-### Probar el servidor GPS con el simulador
+### 4. Registrar el equipo y arrancar el servidor
+
+Solo se aceptan IMEIs registrados y habilitados en la tabla `devices`:
+
+```powershell
+python tools/manage_devices.py add --imei 356307042441013 --name "Simulador" --vehicle "Moto de prueba"
+python tools/manage_devices.py list
+```
 
 Terminal 1 (servidor):
 
 ```powershell
-$env:VALKERY_GPS_ALLOWED_IMEIS = "356307042441013"
 cd gps-server; python -m valkery_gps
 ```
 
@@ -96,7 +121,18 @@ python tools/device_simulator.py --codec 8e --records 3 --packets 5 --fragment 9
 python tools/device_simulator.py --pdf-example
 ```
 
-El IMEI `356307042441013` es el del ejemplo del PDF. El IMEI real no se guarda en el repositorio.
+El IMEI `356307042441013` es el del ejemplo del PDF. El IMEI real se registra con `manage_devices.py`
+y nunca se guarda en el repositorio.
+
+### Consultas útiles en Workbench
+
+```sql
+SELECT * FROM device_states;
+SELECT gps_time, received_at, valid, latitude, longitude, speed, ignition, dout1
+  FROM positions ORDER BY gps_time DESC LIMIT 50;
+SELECT * FROM device_sessions ORDER BY connected_at DESC LIMIT 20;
+SELECT id, received_at, codec, record_count, parse_status, error FROM raw_packets ORDER BY id DESC LIMIT 20;
+```
 
 ## Reglas de seguridad
 

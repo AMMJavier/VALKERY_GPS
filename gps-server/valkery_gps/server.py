@@ -1,7 +1,7 @@
 """Servidor TCP asyncio para equipos Teltonika.
 
 Ciclo de una conexión:
-1. El equipo envía el IMEI → se autoriza → respuesta 0x01 / 0x00.
+1. El equipo envía el IMEI → se autoriza contra el registro → 0x01 / 0x00.
 2. El equipo envía tramas AVL → se decodifican → se entregan al sink →
    ACK de 4 bytes con la cantidad aceptada (solo si el sink terminó bien).
 3. Ping 0xFF: solo renueva last_seen.
@@ -18,8 +18,10 @@ import asyncio
 import contextlib
 import logging
 
+from valkery_core.enums import CloseReason
+
 from .config import GpsServerConfig
-from .pipeline import DeviceAuthorizer, RecordSink
+from .pipeline import DeviceRegistry, RecordSink
 from .protocol.base import AvlPacket, DataFrame, Frame, ImeiFrame, PingFrame, ProtocolError
 from .protocol.teltonika import (
     TeltonikaFrameDecoder,
@@ -32,22 +34,24 @@ from .session import ConnectionManager, DeviceSession
 logger = logging.getLogger(__name__)
 
 READ_CHUNK = 4096
+SHUTDOWN_GRACE_S = 5
 
 
 class GpsServer:
     def __init__(
         self,
         config: GpsServerConfig,
-        authorizer: DeviceAuthorizer,
+        registry: DeviceRegistry,
         sink: RecordSink,
         connections: ConnectionManager | None = None,
     ) -> None:
         self.config = config
-        self.authorizer = authorizer
+        self.registry = registry
         self.sink = sink
         self.connections = connections or ConnectionManager()
         self._server: asyncio.Server | None = None
         self._open_sockets = 0
+        self._tasks: set[asyncio.Task] = set()
 
     @property
     def port(self) -> int:
@@ -64,17 +68,28 @@ class GpsServer:
         if self._server is None:
             await self.start()
         assert self._server is not None
-        async with self._server:
-            await self._server.serve_forever()
+        await self._server.serve_forever()
 
     async def stop(self) -> None:
+        """Deja de aceptar conexiones y cierra las sesiones abiertas registrándolas."""
         if self._server is not None:
             self._server.close()
-            await self._server.wait_closed()
+        for session in self.connections.all():
+            session.close(CloseReason.SERVER_SHUTDOWN)
+        if self._tasks:
+            await asyncio.wait(self._tasks, timeout=SHUTDOWN_GRACE_S)
+        if self._server is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self._server.wait_closed(), SHUTDOWN_GRACE_S)
 
     # ------------------------------------------------------------------ conexión
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
         peer = _peer_name(writer)
         if self._open_sockets >= self.config.max_connections:
             logger.warning("Límite de conexiones alcanzado; se rechaza %s", peer)
@@ -83,25 +98,44 @@ class GpsServer:
 
         self._open_sockets += 1
         session: DeviceSession | None = None
+        reason = CloseReason.DEVICE_CLOSED.value
         decoder = TeltonikaFrameDecoder(self.config.max_frame_bytes)
         try:
-            session = await self._handshake(reader, writer, peer, decoder)
+            session, pending = await self._handshake(reader, writer, peer, decoder)
             if session is not None:
+                # El equipo pudo enviar datos en el mismo segmento TCP que el IMEI.
+                # Se procesan aquí (no dentro del handshake) para que un error
+                # en ellos cierre la sesión ya registrada.
+                for frame in pending:
+                    await self._handle_frame(session, frame)
                 await self._receive_loop(reader, session, decoder)
         except TimeoutError:
+            reason = CloseReason.IDLE_TIMEOUT.value
             logger.info("Timeout de inactividad: %s", session.imei if session else peer)
         except ProtocolError as exc:
+            reason = f"{CloseReason.PROTOCOL_ERROR.value}: {exc}"
             logger.warning("Error de protocolo desde %s: %s", session.imei if session else peer, exc)
         except (ConnectionError, asyncio.IncompleteReadError):
             logger.info("Conexión cerrada por el equipo: %s", session.imei if session else peer)
-        except Exception:
+        except Exception as exc:
+            reason = f"{CloseReason.PROCESSING_ERROR.value}: {type(exc).__name__}"
             logger.exception("Error procesando datos de %s; se cierra sin ACK", session.imei if session else peer)
         finally:
             self._open_sockets -= 1
-            if session is not None:
-                self.connections.unregister(session)
-                logger.info("Sesión finalizada: IMEI %s (%d registros)", session.imei, session.records_received)
             await _close(writer)
+            if session is not None:
+                await self._finish_session(session, session.close_reason or reason)
+
+    async def _finish_session(self, session: DeviceSession, reason: str) -> None:
+        self.connections.unregister(session)
+        still_online = self.connections.get(session.imei) is not None
+        try:
+            await self.sink.session_closed(session, reason[:255], still_online)
+        except Exception:
+            logger.exception("No se pudo registrar el cierre de sesión de %s", session.imei)
+        logger.info(
+            "Sesión finalizada: IMEI %s (%d registros, motivo: %s)", session.imei, session.records_received, reason
+        )
 
     async def _handshake(
         self,
@@ -109,33 +143,34 @@ class GpsServer:
         writer: asyncio.StreamWriter,
         peer: str,
         decoder: TeltonikaFrameDecoder,
-    ) -> DeviceSession | None:
+    ) -> tuple[DeviceSession | None, list[Frame]]:
         frames: list[Frame] = []
         while not frames:
             chunk = await asyncio.wait_for(reader.read(READ_CHUNK), self.config.handshake_timeout_s)
             if not chunk:
-                return None
+                return None, []
             frames = decoder.feed(chunk)
 
         first = frames[0]
         if not isinstance(first, ImeiFrame):
             raise ProtocolError("la primera trama no es un IMEI")
 
-        accepted = await self.authorizer.is_authorized(first.imei)
-        writer.write(encode_imei_response(accepted))
+        device_id = await self.registry.authorize(first.imei)
+        writer.write(encode_imei_response(device_id is not None))
         await writer.drain()
-        if not accepted:
+        if device_id is None:
             logger.warning("IMEI no autorizado %s desde %s", first.imei, peer)
-            return None
+            return None, []
 
-        session = DeviceSession(imei=first.imei, peer=peer, writer=writer)
+        session = DeviceSession(imei=first.imei, device_id=device_id, peer=peer, writer=writer)
         self.connections.register(session)
         logger.info("IMEI %s autenticado desde %s", first.imei, peer)
-
-        # El equipo pudo enviar datos en el mismo segmento TCP que el IMEI.
-        for frame in frames[1:]:
-            await self._handle_frame(session, frame)
-        return session
+        try:
+            await self.sink.session_opened(session)
+        except Exception:
+            self.connections.unregister(session)
+            raise
+        return session, frames[1:]
 
     async def _receive_loop(
         self, reader: asyncio.StreamReader, session: DeviceSession, decoder: TeltonikaFrameDecoder
@@ -156,14 +191,22 @@ class GpsServer:
         if not isinstance(frame, DataFrame):
             raise ProtocolError(f"trama inesperada: {frame!r}")
 
-        message = decode_data_frame(frame.raw)
+        try:
+            message = decode_data_frame(frame.raw)
+        except ProtocolError as exc:
+            try:
+                await self.sink.packet_rejected(session, frame.raw, exc)
+            except Exception:
+                logger.exception("No se pudo guardar la trama rechazada de %s", session.imei)
+            raise
+
         session.packets_received += 1
         if isinstance(message, AvlPacket):
-            accepted = await self.sink.handle_packet(session, message)
+            accepted = await self.sink.handle_packet(session, message, frame.raw)
             await session.send(encode_records_ack(accepted))
             session.records_received += accepted
         else:
-            await self.sink.handle_command_response(session, message)
+            await self.sink.handle_command_response(session, message, frame.raw)
 
 
 def _peer_name(writer: asyncio.StreamWriter) -> str:

@@ -10,7 +10,11 @@ requires-python = ">=3.11"
 dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "aiomysql>=0.2",
+    # aiomysql 0.3.x usa escape_bytes_prefixed, que PyMySQL 1.2 eliminó (falla al enviar BLOB/BINARY).
+    "PyMySQL>=1.1,<1.2",
+    "cryptography>=42",  # autenticación caching_sha2_password de MySQL 8+
     "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
 ]
 
 [tool.setuptools.packages.find]
