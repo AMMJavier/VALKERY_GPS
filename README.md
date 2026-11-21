@@ -2,7 +2,7 @@
 
 Plataforma propia de monitoreo GPS para un **Teltonika FMC920** (motocicleta con relé de inmovilización).
 
-Estado: **fase 5 completa** (servidor TCP, persistencia, eventos, API y dashboard web). Sin validación en hardware real.
+Estado: **fase 6 completa** (servidor TCP, persistencia, eventos, API, dashboard y comandos con salvaguardas). Sin validación en hardware real.
 
 | Fase | Estado |
 |---|---|
@@ -11,7 +11,7 @@ Estado: **fase 5 completa** (servidor TCP, persistencia, eventos, API y dashboar
 | 3 · Eventos | ✅ encendido, alarmas nativas, geocercas, conexión/desconexión, reglas |
 | 4 · API | ✅ JWT, roles y permisos, historial paginado, eventos, geocercas, auditoría, WebSocket |
 | 5 · Dashboard | ✅ mapa en vivo por WebSocket, historial con reproducción, eventos, geocercas, reglas, usuarios |
-| 6 · Comandos | pendiente (el encoder Codec 12 ya existe; el envío no) |
+| 6 · Comandos | ✅ Codec 12 con doble confirmación, precondiciones, verificación por DOUT1 y auditoría (relé deshabilitado por defecto) |
 | 7 · Migración | pendiente |
 
 ## Stack
@@ -39,7 +39,7 @@ VALKERY_GPS/
 │   ├── session/              #   connection_manager, device_session
 │   ├── handlers/             #   validity, normalize, database  (antes del ACK)
 │   │   └── events/           #   engine, ignition, alarm, geofence (misma transacción, ADR 0004)
-│   ├── commands/             #   dispatcher: MySQL -> sesión TCP activa
+│   ├── commands/             #   dispatcher: envío, respuesta y verificación DOUT1 (ADR 0006)
 │   ├── schedule/             #   retención de tramas, inactividad (DEVICE_OFFLINE)
 │   └── pipeline.py           #   orden de handlers; ACK solo tras persistir
 ├── backend/valkery_api/      # FastAPI: auth JWT, REST v1, WebSocket, auditoría (≈ traccar api/)
@@ -184,6 +184,35 @@ cd frontend; npm install; npm run dev
 Abre http://localhost:5173 e inicia sesión con el usuario creado en el paso 6. Detalles y
 criterios de presentación (fechas, estados) en [frontend/README.md](frontend/README.md).
 
+### 8. Comandos remotos (fase 6)
+
+Apagados por defecto. Para probarlos con el simulador:
+
+1. En `.env`, pon `VALKERY_COMMANDS_ENABLED=true` (consultas) y, solo para la prueba con el
+   simulador, `VALKERY_COMMANDS_RELAY_ENABLED=true`. Reinicia la API y el servidor GPS.
+2. Para inmovilizar, un usuario necesita el permiso `commands:immobilize`, que ningún rol trae.
+   Créale un rol específico en Workbench:
+
+```sql
+INSERT INTO roles (name, description) VALUES ('inmovilizador', 'Puede inmovilizar la moto');
+INSERT INTO role_permissions (role_id, permission)
+  SELECT id, 'commands:immobilize' FROM roles WHERE name = 'inmovilizador';
+```
+
+   Después asígnalo desde **Usuarios** o en `user_roles`.
+3. Simulador estacionado que responde a los comandos como el FMC920:
+
+```powershell
+python tools/device_simulator.py --scenario parked --respond-commands 300
+```
+
+4. En el dashboard, en **Comandos**: primero "Versión de firmware" (solo lectura); después
+   "Inmovilizar" → confirmar con tu contraseña → el estado pasa a **VERIFICADO** cuando llega
+   un registro con DOUT1=1.
+
+Antes de usarlo con la moto real, lee [ADR 0006](docs/adr/0006-comandos-con-salvaguardas.md)
+(sección "Pendiente antes de activar el relé").
+
 ### Consultas útiles en Workbench
 
 ```sql
@@ -193,10 +222,12 @@ SELECT gps_time, received_at, valid, latitude, longitude, speed, ignition, dout1
 SELECT * FROM device_sessions ORDER BY connected_at DESC LIMIT 20;
 SELECT id, received_at, codec, record_count, parse_status, error FROM raw_packets ORDER BY id DESC LIMIT 20;
 SELECT occurred_at, event_type, severity, source, attributes FROM events ORDER BY occurred_at DESC LIMIT 50;
+SELECT id, command_type, command_text, status, requested_at, sent_at, verified_at, failure_reason FROM commands ORDER BY id DESC;
 ```
 
 ## Reglas de seguridad
 
 - Nunca subir `.env`, IMEI reales, ICCID ni datos de la SIM.
-- Comandos de inmovilización: deshabilitados hasta completar la prueba física del relé (fase 6).
+- Comandos de relé: `VALKERY_COMMANDS_RELAY_ENABLED=false` hasta completar la prueba física del relé.
+- `commands:immobilize` no lo tiene ningún rol: se otorga explícitamente a quien corresponda.
 - Un ACK o respuesta Codec 12 **no** equivale a éxito físico del relé.

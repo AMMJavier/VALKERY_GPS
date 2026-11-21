@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from "./context/AuthContext";
 import { LiveProvider } from "./context/LiveContext";
 import { Account } from "./pages/Account";
 import { Audit } from "./pages/Audit";
+import { Commands } from "./pages/Commands";
 import { Dashboard } from "./pages/Dashboard";
 import { Devices } from "./pages/Devices";
 import { Events } from "./pages/Events";
@@ -49,6 +50,7 @@ export default function App() {
             <Route path="eventos" element={<RequirePermission perm="events:read"><Events /></RequirePermission>} />
             <Route path="geocercas" element={<RequirePermission perm="devices:read"><Geofences /></RequirePermission>} />
             <Route path="reglas" element={<RequirePermission perm="events:read"><Rules /></RequirePermission>} />
+            <Route path="comandos" element={<RequirePermission perm="commands:send"><Commands /></RequirePermission>} />
             <Route path="dispositivos" element={<RequirePermission perm="devices:read"><Devices /></RequirePermission>} />
             <Route path="usuarios" element={<RequirePermission perm="users:manage"><Users /></RequirePermission>} />
             <Route path="auditoria" element={<RequirePermission perm="audit:read"><Audit /></RequirePermission>} />

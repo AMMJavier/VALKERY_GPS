@@ -27,6 +27,17 @@ class CoreSettings(BaseSettings):
     db_pool_size: int = 5
     raw_packet_retention_days: int = 30
 
+    # --- Comandos (fase 6). Ambos interruptores están apagados por defecto.
+    commands_enabled: bool = False  # todos los comandos
+    commands_relay_enabled: bool = False  # IMMOBILIZE / RELEASE: solo tras la prueba física del relé
+    command_ttl_s: int = 60  # vencimiento desde la creación (no se envían tarde)
+    command_response_timeout_s: int = 60  # sin respuesta Codec 12 → RESULTADO_INCIERTO
+    command_verify_timeout_s: int = 180  # sin DOUT1 observado → RESULTADO_INCIERTO
+    command_state_max_age_s: int = 120  # antigüedad máxima del estado para validar precondiciones
+    # Texto exacto enviado al FMC920. VERIFICAR con el firmware y el cableado reales.
+    command_immobilize_text: str = "setdigout 1"
+    command_release_text: str = "setdigout 0"
+
 
 @lru_cache
 def get_core_settings() -> CoreSettings:

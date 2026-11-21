@@ -43,10 +43,10 @@ async def list_positions(
     include_io: bool = False,
 ) -> Page[PositionOut]:
     if to <= from_:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="'to' debe ser posterior a 'from'")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="'to' debe ser posterior a 'from'")
     if to - from_ > timedelta(days=settings.positions_max_range_days):
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"El rango máximo es de {settings.positions_max_range_days} días",
         )
     limit = min(limit, settings.page_max)

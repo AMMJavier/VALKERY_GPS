@@ -75,3 +75,27 @@ def _size_for(value: int) -> int:
         if 0 <= value < 1 << (size * 8):
             return size
     raise ValueError(f"valor I/O fuera de rango: {value}")
+
+
+def _wrap(body: bytes) -> bytes:
+    return b"\x00\x00\x00\x00" + len(body).to_bytes(4, "big") + body + crc16_ibm(body).to_bytes(4, "big")
+
+
+def build_codec12_response(text: str) -> bytes:
+    """Respuesta Codec 12 (tipo 0x06) como la enviaría el equipo."""
+    content = text.encode("ascii")
+    return _wrap(bytes([0x0C, 1, 0x06]) + len(content).to_bytes(4, "big") + content + b"\x01")
+
+
+def parse_codec12_command(frame: bytes) -> str:
+    """Extrae el texto de un comando Codec 12 (tipo 0x05) recibido del servidor."""
+    if len(frame) < 17 or frame[:4] != b"\x00\x00\x00\x00":
+        raise ValueError("trama Codec 12 inválida")
+    length = int.from_bytes(frame[4:8], "big")
+    body = frame[8 : 8 + length]
+    if crc16_ibm(body) != int.from_bytes(frame[8 + length : 12 + length], "big"):
+        raise ValueError("CRC inválido")
+    if body[0] != 0x0C or body[2] != 0x05:
+        raise ValueError("no es un comando Codec 12")
+    size = int.from_bytes(body[3:7], "big")
+    return body[7 : 7 + size].decode("ascii")

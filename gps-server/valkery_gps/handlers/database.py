@@ -12,6 +12,7 @@ Referencia Traccar: handler/DatabaseHandler.java, database/DeviceLookupService.j
 from __future__ import annotations
 
 import hashlib
+from typing import TYPE_CHECKING
 import logging
 from datetime import UTC, datetime
 
@@ -28,6 +29,9 @@ from ..session.device_session import DeviceSession
 from .events.base import EventSettings, PreviousState
 from .events.engine import EventEngine, connectivity_event
 from .normalize import position_row
+
+if TYPE_CHECKING:
+    from ..commands.dispatcher import CommandDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +81,14 @@ class DatabaseDeviceRegistry:
 
 class DatabaseSink:
     def __init__(
-        self, session_factory: async_sessionmaker[AsyncSession], events: EventSettings | None = None
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        events: EventSettings | None = None,
+        commands: CommandDispatcher | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._engine = EventEngine(events or EventSettings())
+        self.commands = commands
 
     async def mark_all_offline(self) -> None:
         """Al arrancar no hay sesiones vivas: limpia estados de un cierre abrupto anterior."""
@@ -175,17 +183,23 @@ class DatabaseSink:
             await self._communication(db, state, session.last_seen)
             self._apply_rows_to_state(state, rows)
             await self._engine.process(db, session.device_id, new_rows, previous)
+            if self.commands is not None and new_rows:
+                await self.commands.verify_from_rows(db, session.device_id, new_rows)
         return len(packet.records)
 
     async def handle_command_response(self, session: DeviceSession, response: CommandResponse, raw: bytes) -> None:
-        # La relación con commands/command_responses se implementa en la fase 6.
         async with self._session_factory.begin() as db:
-            await db.execute(
+            result = await db.execute(
                 insert(RawPacket).values(
                     _raw_packet_values(session, raw, codec=CODEC_12, records=0, status=ParseStatus.OK, error=None)
                 )
             )
-        logger.info("IMEI %s | respuesta Codec 12: %r", session.imei, response.text)
+            state = await self._lock_state(db, session.device_id)
+            await self._communication(db, state, session.last_seen)
+            if self.commands is not None:
+                await self.commands.on_response(db, session, response, result.inserted_primary_key[0])
+            else:
+                logger.info("IMEI %s | respuesta Codec 12 sin despachador: %r", session.imei, response.text)
 
     async def packet_rejected(self, session: DeviceSession, raw: bytes, error: ProtocolError) -> None:
         if isinstance(error, CrcError):

@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from valkery_core.config import ENV_FILE, get_core_settings
 from valkery_core.db import create_engine, create_session_factory
 
+from .commands.dispatcher import CommandDispatcher
 from .config import GpsServerConfig
 from .handlers.database import DatabaseDeviceRegistry, DatabaseSink
 from .handlers.events.base import EventSettings
@@ -33,11 +34,18 @@ async def run() -> None:
     events = EventSettings.from_env()
     sink = DatabaseSink(session_factory, events)
     server = GpsServer(GpsServerConfig.from_env(), DatabaseDeviceRegistry(session_factory), sink)
+    sink.commands = CommandDispatcher(session_factory, server.connections, settings)
+    logger.info(
+        "Comandos: %s; relé: %s",
+        "habilitados" if settings.commands_enabled else "DESHABILITADOS",
+        "habilitado" if settings.commands_relay_enabled else "DESHABILITADO",
+    )
 
     await sink.mark_all_offline()
     tasks = [
         asyncio.create_task(retention_loop(session_factory, settings.raw_packet_retention_days)),
         asyncio.create_task(inactivity_loop(session_factory, events.offline_after_s, events.inactivity_check_s)),
+        asyncio.create_task(sink.commands.run()),
     ]
     try:
         await server.serve_forever()

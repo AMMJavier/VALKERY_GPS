@@ -10,6 +10,7 @@ const LINKS = [
   { to: "/eventos", label: "Eventos", perm: "events:read" },
   { to: "/geocercas", label: "Geocercas", perm: "devices:read" },
   { to: "/reglas", label: "Reglas", perm: "events:read" },
+  { to: "/comandos", label: "Comandos", perm: "commands:send" },
   { to: "/dispositivos", label: "Dispositivos", perm: "devices:read" },
   { to: "/usuarios", label: "Usuarios", perm: "users:manage" },
   { to: "/auditoria", label: "Auditoría", perm: "audit:read" },

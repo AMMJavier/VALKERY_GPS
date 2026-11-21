@@ -22,6 +22,7 @@ export class ApiError extends Error {
 }
 
 function formatDetail(detail) {
+  if (detail && typeof detail === "object" && !Array.isArray(detail) && detail.message) return detail.message;
   // FastAPI devuelve una lista de errores de validación en 422.
   if (Array.isArray(detail)) {
     return detail.map((d) => `${(d.loc ?? []).slice(1).join(".") || "dato"}: ${d.msg}`).join("; ");
@@ -98,4 +99,13 @@ export const api = {
     request(`/users/${id}/reset-password`, { method: "POST", body: { new_password } }),
 
   audit: (params) => request("/audit", { params }),
+
+  commandTypes: () => request("/commands/types"),
+  deviceCommands: (deviceId) => request(`/devices/${deviceId}/commands`),
+  command: (id) => request(`/commands/${id}`),
+  createCommand: (deviceId, command_type) =>
+    request(`/devices/${deviceId}/commands`, { method: "POST", body: { command_type } }),
+  confirmCommand: (id, password) =>
+    request(`/commands/${id}/confirm`, { method: "POST", body: { password, acknowledge_safety: true } }),
+  cancelCommand: (id) => request(`/commands/${id}/cancel`, { method: "POST" }),
 };

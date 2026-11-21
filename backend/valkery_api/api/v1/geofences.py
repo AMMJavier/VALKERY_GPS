@@ -31,7 +31,7 @@ async def _get(db: DbSession, geofence_id: int) -> Geofence:
 
 async def _check_device(db: DbSession, device_id: int | None) -> None:
     if device_id is not None and await db.get(Device, device_id) is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="device_id inexistente")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="device_id inexistente")
 
 
 @router.get("", response_model=list[GeofenceOut])

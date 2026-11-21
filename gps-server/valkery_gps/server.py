@@ -48,7 +48,8 @@ class GpsServer:
         self.config = config
         self.registry = registry
         self.sink = sink
-        self.connections = connections or ConnectionManager()
+        # `or` no sirve: un ConnectionManager vacío es falso (define __len__).
+        self.connections = connections if connections is not None else ConnectionManager()
         self._server: asyncio.Server | None = None
         self._open_sockets = 0
         self._tasks: set[asyncio.Task] = set()

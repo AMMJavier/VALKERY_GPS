@@ -17,6 +17,10 @@ const DEFAULTS = {
   GEOFENCE_EXIT: "warning",
   DEVICE_ONLINE: "info",
   DEVICE_OFFLINE: "warning",
+  COMMAND_SENT: "info",
+  COMMAND_RESPONSE: "info",
+  COMMAND_VERIFIED: "info",
+  COMMAND_FAILED: "warning",
 };
 
 export function Rules() {

@@ -17,7 +17,7 @@ async def roles_by_name(db: AsyncSession, names: list[str]) -> list[Role]:
     roles = (await db.scalars(select(Role).where(Role.name.in_(unique)))).all()
     missing = set(unique) - {r.name for r in roles}
     if missing:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"roles inexistentes: {sorted(missing)}")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"roles inexistentes: {sorted(missing)}")
     return list(roles)
 
 

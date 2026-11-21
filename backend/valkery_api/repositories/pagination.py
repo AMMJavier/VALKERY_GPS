@@ -26,4 +26,4 @@ def decode_cursor(cursor: str) -> tuple[datetime, int]:
             raise ValueError("sin zona horaria")
         return parsed, int(row_id)
     except (ValueError, UnicodeDecodeError) as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="cursor inválido") from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="cursor inválido") from exc

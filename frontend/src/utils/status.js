@@ -51,7 +51,30 @@ export const EVENT_LABELS = {
   GEOFENCE_EXIT: "Salida de geocerca",
   DEVICE_ONLINE: "Equipo en línea",
   DEVICE_OFFLINE: "Equipo fuera de línea",
+  COMMAND_SENT: "Comando enviado",
+  COMMAND_RESPONSE: "Respuesta a comando",
+  COMMAND_VERIFIED: "Comando verificado",
+  COMMAND_FAILED: "Comando fallido o incierto",
 };
+
+export const COMMAND_STATUS = {
+  CREADO: { tone: "sky", label: "Esperando confirmación" },
+  AUTORIZADO: { tone: "sky", label: "Autorizado, por enviar" },
+  ENVIANDO: { tone: "sky", label: "Enviando" },
+  ENVIADO: { tone: "sky", label: "Enviado, esperando respuesta" },
+  RESPUESTA_RECIBIDA: { tone: "amber", label: "Respondió; falta verificar" },
+  VERIFICADO: { tone: "green", label: "Verificado (DOUT1 observado)" },
+  RECHAZADO: { tone: "slate", label: "Rechazado / cancelado" },
+  EXPIRADO: { tone: "slate", label: "Expirado" },
+  FALLIDO: { tone: "red", label: "Fallido" },
+  RESULTADO_INCIERTO: { tone: "amber", label: "Resultado incierto" },
+};
+
+export function commandStatus(cmd) {
+  // Una consulta (sin DOUT1 esperado) termina con la respuesta: no es "falta verificar".
+  if (cmd.status === "RESPUESTA_RECIBIDA" && cmd.expected_dout1 == null) return { tone: "green", label: "Respondido" };
+  return COMMAND_STATUS[cmd.status] ?? { tone: "slate", label: cmd.status };
+}
 
 export function eventLabel(type) {
   return EVENT_LABELS[type] ?? type;

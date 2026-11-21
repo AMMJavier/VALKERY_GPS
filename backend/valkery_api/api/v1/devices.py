@@ -37,7 +37,7 @@ async def get_device_or_404(db: DbSession, device_id: int) -> Device:
 
 async def _check_vehicle(db: DbSession, vehicle_id: int | None) -> None:
     if vehicle_id is not None and await db.get(Vehicle, vehicle_id) is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="vehicle_id inexistente")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="vehicle_id inexistente")
 
 
 @router.get("", response_model=list[DeviceOut])

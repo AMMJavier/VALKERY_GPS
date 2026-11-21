@@ -67,7 +67,7 @@ async def list_rules(_: Reader, db: DbSession) -> list[EventRule]:
 async def upsert_rule(body: EventRuleIn, current: RulesManager, db: DbSession, request: Request) -> EventRule:
     """Crea o reemplaza la regla de (event_type, device_id)."""
     if body.device_id is not None and await db.get(Device, body.device_id) is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="device_id inexistente")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="device_id inexistente")
     scope = EventRule.device_id.is_(None) if body.device_id is None else EventRule.device_id == body.device_id
     rule = await db.scalar(select(EventRule).where(EventRule.event_type == body.event_type.value, scope))
     if rule is None:

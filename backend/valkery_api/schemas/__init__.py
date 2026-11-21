@@ -272,3 +272,57 @@ class AuditOut(ApiModel):
     ip: str | None
     details: dict[str, Any]
     created_at: datetime
+
+
+# --------------------------------------------------------------------- comandos
+
+
+class CommandTypeOut(BaseModel):
+    command_type: str
+    label: str
+    description: str
+    relay: bool
+    requires_confirmation: bool
+    permissions: list[str]
+    allowed: bool = Field(description="El usuario tiene los permisos y la configuración lo habilita")
+    unavailable_reason: str | None = None
+
+
+class CommandCreate(BaseModel):
+    command_type: str = Field(max_length=30)
+
+
+class CommandConfirm(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+    acknowledge_safety: bool = Field(
+        description="El usuario declara que verificó que la moto está detenida y es seguro ejecutar el comando"
+    )
+
+
+class CommandResponseOut(ApiModel):
+    received_at: datetime
+    response_text: str
+    result: str
+    detail: str | None
+
+
+class CommandOut(ApiModel):
+    id: int
+    device_id: int
+    command_type: str
+    command_text: str
+    status: str
+    expected_dout1: bool | None
+    requested_by: int | None
+    confirmed_by: int | None
+    requested_at: datetime
+    expires_at: datetime
+    confirmed_at: datetime | None
+    sent_at: datetime | None
+    responded_at: datetime | None
+    verified_at: datetime | None
+    finished_at: datetime | None
+    preconditions: list[dict[str, Any]]
+    verification: dict[str, Any] | None
+    failure_reason: str | None
+    responses: list[CommandResponseOut] = []

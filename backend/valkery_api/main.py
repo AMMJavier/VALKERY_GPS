@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from valkery_core.config import CoreSettings, get_core_settings
 from valkery_core.db import create_engine, create_session_factory
 
 from .api.v1 import router as v1_router
@@ -29,6 +30,7 @@ def create_app(
     settings: ApiSettings | None = None,
     db_url: str | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    core_settings: CoreSettings | None = None,
 ) -> FastAPI:
     settings = settings or get_api_settings()
 
@@ -53,6 +55,7 @@ def create_app(
         description="Monitoreo del Teltonika FMC920. Autenticación: POST /api/v1/auth/login → Bearer token.",
     )
     app.state.settings = settings
+    app.state.core_settings = core_settings or get_core_settings()
     if session_factory is not None:
         # Inyectada (pruebas): disponible aunque el cliente no ejecute el lifespan.
         app.state.session_factory = session_factory
