@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DeviceStatusCard } from "../components/common/DeviceStatus";
+import { VehicleHero } from "../components/common/VehicleHero";
 import { Badge, Button, Card, Empty, ErrorBox, Field, Input, PageHeader, Select, TimeText } from "../components/common/ui";
 import { useLive } from "../context/LiveContext";
 import { useAsync } from "../hooks/useAsync";
@@ -110,6 +111,7 @@ export function Commands() {
         </div>
 
         <div className="min-w-0 space-y-4">
+          {device && <VehicleHero device={device} now={now} />}
           <ErrorBox error={error} />
           {blocked && <ChecksCard title="No se puede solicitar" message={blocked.message} checks={blocked.checks} />}
           {active && (
