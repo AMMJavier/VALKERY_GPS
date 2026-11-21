@@ -2,7 +2,7 @@
 
 Plataforma propia de monitoreo GPS para un **Teltonika FMC920** (motocicleta con relé de inmovilización).
 
-Estado: **fase 4 completa** (servidor TCP, persistencia, eventos y API REST/WebSocket). Sin validación en hardware real.
+Estado: **fase 5 completa** (servidor TCP, persistencia, eventos, API y dashboard web). Sin validación en hardware real.
 
 | Fase | Estado |
 |---|---|
@@ -10,7 +10,7 @@ Estado: **fase 4 completa** (servidor TCP, persistencia, eventos y API REST/WebS
 | 2 · Persistencia | ✅ MySQL + Alembic, posiciones sin duplicados, estado actual, sesiones, retención |
 | 3 · Eventos | ✅ encendido, alarmas nativas, geocercas, conexión/desconexión, reglas |
 | 4 · API | ✅ JWT, roles y permisos, historial paginado, eventos, geocercas, auditoría, WebSocket |
-| 5 · Dashboard | pendiente |
+| 5 · Dashboard | ✅ mapa en vivo por WebSocket, historial con reproducción, eventos, geocercas, reglas, usuarios |
 | 6 · Comandos | pendiente (el encoder Codec 12 ya existe; el envío no) |
 | 7 · Migración | pendiente |
 
@@ -43,7 +43,7 @@ VALKERY_GPS/
 │   ├── schedule/             #   retención de tramas, inactividad (DEVICE_OFFLINE)
 │   └── pipeline.py           #   orden de handlers; ACK solo tras persistir
 ├── backend/valkery_api/      # FastAPI: auth JWT, REST v1, WebSocket, auditoría (≈ traccar api/)
-├── frontend/                 # React + Tailwind + Vite                         (≈ traccar-web)
+├── frontend/                 # React + Tailwind + Vite + Leaflet (ver frontend/README) (≈ traccar-web)
 ├── database/                 # Alembic (migrations/) y setup/ (script SQL inicial) (≈ traccar schema/)
 ├── tools/                    # Simulador, admin, dispositivos, geocercas, eventos (≈ traccar tools/)
 ├── deployment/               # Compose, nginx, systemd                         (≈ traccar docker/, setup/)
@@ -172,6 +172,17 @@ cd backend; uvicorn valkery_api.main:app --reload --port 8000
 Roles iniciales: `admin` (todo excepto inmovilizar), `operator` (lectura, geocercas y reglas) y
 `viewer` (solo lectura). El permiso `commands:immobilize` no lo tiene ningún rol por defecto.
 Ver [ADR 0005](docs/adr/0005-autenticacion-y-permisos.md).
+
+### 7. Dashboard web (fase 5)
+
+Con la API en `:8000` y el servidor GPS corriendo:
+
+```powershell
+cd frontend; npm install; npm run dev
+```
+
+Abre http://localhost:5173 e inicia sesión con el usuario creado en el paso 6. Detalles y
+criterios de presentación (fechas, estados) en [frontend/README.md](frontend/README.md).
 
 ### Consultas útiles en Workbench
 
