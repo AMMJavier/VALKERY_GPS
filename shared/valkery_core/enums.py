@@ -76,3 +76,33 @@ DEFAULT_SEVERITY: dict[EventType, Severity] = {
 class GeofenceType(StrEnum):
     CIRCLE = "circle"
     POLYGON = "polygon"
+
+
+class Permission(StrEnum):
+    DEVICES_READ = "devices:read"
+    POSITIONS_READ = "positions:read"
+    EVENTS_READ = "events:read"
+    DEVICES_MANAGE = "devices:manage"
+    GEOFENCES_MANAGE = "geofences:manage"
+    EVENT_RULES_MANAGE = "event_rules:manage"
+    USERS_MANAGE = "users:manage"
+    AUDIT_READ = "audit:read"
+    # Fase 6. La inmovilización es un privilegio aparte que ningún rol trae por defecto.
+    COMMANDS_SEND = "commands:send"
+    COMMANDS_IMMOBILIZE = "commands:immobilize"
+
+
+READ_PERMISSIONS = frozenset({Permission.DEVICES_READ, Permission.POSITIONS_READ, Permission.EVENTS_READ})
+
+# Roles creados por la migración 0003.
+DEFAULT_ROLES: dict[str, tuple[str, frozenset[Permission]]] = {
+    "admin": (
+        "Administración completa (sin inmovilización)",
+        frozenset(Permission) - {Permission.COMMANDS_IMMOBILIZE},
+    ),
+    "operator": (
+        "Monitoreo y gestión de geocercas y reglas",
+        READ_PERMISSIONS | {Permission.GEOFENCES_MANAGE, Permission.EVENT_RULES_MANAGE},
+    ),
+    "viewer": ("Solo lectura", READ_PERMISSIONS),
+}

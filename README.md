@@ -2,14 +2,14 @@
 
 Plataforma propia de monitoreo GPS para un **Teltonika FMC920** (motocicleta con relé de inmovilización).
 
-Estado: **fase 3 completa** (servidor TCP, persistencia en MySQL y motor de eventos). Sin validación en hardware real.
+Estado: **fase 4 completa** (servidor TCP, persistencia, eventos y API REST/WebSocket). Sin validación en hardware real.
 
 | Fase | Estado |
 |---|---|
 | 1 · TCP y codecs | ✅ IMEI, tramas fragmentadas, CRC, varios AVL, ACK, simulador |
 | 2 · Persistencia | ✅ MySQL + Alembic, posiciones sin duplicados, estado actual, sesiones, retención |
 | 3 · Eventos | ✅ encendido, alarmas nativas, geocercas, conexión/desconexión, reglas |
-| 4 · API | pendiente |
+| 4 · API | ✅ JWT, roles y permisos, historial paginado, eventos, geocercas, auditoría, WebSocket |
 | 5 · Dashboard | pendiente |
 | 6 · Comandos | pendiente (el encoder Codec 12 ya existe; el envío no) |
 | 7 · Migración | pendiente |
@@ -42,10 +42,10 @@ VALKERY_GPS/
 │   ├── commands/             #   dispatcher: MySQL -> sesión TCP activa
 │   ├── schedule/             #   retención de tramas, inactividad (DEVICE_OFFLINE)
 │   └── pipeline.py           #   orden de handlers; ACK solo tras persistir
-├── backend/valkery_api/      # FastAPI: auth, recursos REST v1, WebSocket      (≈ traccar api/)
+├── backend/valkery_api/      # FastAPI: auth JWT, REST v1, WebSocket, auditoría (≈ traccar api/)
 ├── frontend/                 # React + Tailwind + Vite                         (≈ traccar-web)
 ├── database/                 # Alembic (migrations/) y setup/ (script SQL inicial) (≈ traccar schema/)
-├── tools/                    # Simulador, dispositivos, geocercas, eventos       (≈ traccar tools/)
+├── tools/                    # Simulador, admin, dispositivos, geocercas, eventos (≈ traccar tools/)
 ├── deployment/               # Compose, nginx, systemd                         (≈ traccar docker/, setup/)
 └── docs/                     # ADRs y notas de protocolo
 ```
@@ -76,7 +76,7 @@ Ver [docs/adr](docs/adr) para las decisiones.
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e shared -r requirements-dev.txt
+pip install -e shared -r backend/requirements.txt -r requirements-dev.txt
 ```
 
 ### 2. Base de datos (una sola vez)
@@ -142,6 +142,36 @@ El escenario `trip` produce `IGNITION_ON`, `GEOFENCE_EXIT`, `IGNITION_OFF` y `TO
 | TOWING / CRASH / JAMMING / POWER_CUT | equipo | critical | El registro fue causado por ese I/O (246/247/249/252) |
 | GEOFENCE_ENTER / GEOFENCE_EXIT | plataforma | info / warning | Cruce de geocerca con posición válida e histéresis |
 | DEVICE_OFFLINE / DEVICE_ONLINE | plataforma | warning / info | Sin comunicación por `VALKERY_EVENT_OFFLINE_AFTER_S` / vuelve a comunicar |
+
+### 6. API (fase 4)
+
+Crea el primer administrador (pide la contraseña por teclado):
+
+```powershell
+python tools/create_admin.py --username admin --name "Tu nombre"
+```
+
+Arranca la API (desde `backend`) y abre la documentación interactiva en http://localhost:8000/docs:
+
+```powershell
+cd backend; uvicorn valkery_api.main:app --reload --port 8000
+```
+
+| Recurso | Permiso | Notas |
+|---|---|---|
+| `POST /api/v1/auth/login` | — | Devuelve un token Bearer; se bloquea tras varios intentos fallidos |
+| `GET /api/v1/devices` | devices:read | Incluye el estado actual de cada equipo |
+| `GET /api/v1/devices/{id}/positions?from=&to=` | positions:read | Rango ≤ 31 días, paginado por cursor |
+| `GET /api/v1/events` | events:read | Filtros por equipo, tipo, severidad y fechas |
+| `/api/v1/geofences` | geofences:manage (escritura) | Círculos y polígonos validados |
+| `PUT /api/v1/event-rules` | event_rules:manage | Habilitar o deshabilitar tipos y cambiar severidad |
+| `/api/v1/users` | users:manage | No permite quitar el último administrador |
+| `GET /api/v1/audit` | audit:read | Inicios de sesión y cambios sensibles |
+| `ws://…/api/v1/ws?token=` | positions:read | Snapshot inicial y luego cambios de estado y eventos en vivo |
+
+Roles iniciales: `admin` (todo excepto inmovilizar), `operator` (lectura, geocercas y reglas) y
+`viewer` (solo lectura). El permiso `commands:immobilize` no lo tiene ningún rol por defecto.
+Ver [ADR 0005](docs/adr/0005-autenticacion-y-permisos.md).
 
 ### Consultas útiles en Workbench
 
